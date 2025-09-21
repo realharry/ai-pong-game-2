@@ -1,0 +1,5 @@
+
+{
+  "name": "AI Pong",
+  "description": "A two-player Pong game against an AI opponent, built with React, TypeScript, and Pixi.js. Features classic gameplay with blocks in the center for an extra challenge, similar to air hockey."
+}
