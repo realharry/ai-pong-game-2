@@ -1,11 +1,9 @@
 import React, { useRef, useEffect } from 'react';
 // Fix: Removed DisplayObject from pixi.js import as it is not an exported member.
-import { Application, Graphics, Container, Text } from 'pixi.js';
+import { Application, Graphics, Container } from 'pixi.js';
 import {
   GAME_WIDTH,
   GAME_HEIGHT,
-  PADDLE_WIDTH,
-  PADDLE_HEIGHT,
   PADDLE_Y_OFFSET,
   BALL_RADIUS,
   BLOCK_WIDTH,
@@ -17,6 +15,9 @@ interface GameProps {
   onScoreUpdate: (scorer: 'player' | 'ai') => void;
   initialBallSpeed: number;
   speedIncrease: number;
+  paddleWidth: number;
+  paddleHeight: number;
+  isPaused: boolean;
 }
 
 // --- Sound Engine ---
@@ -57,11 +58,11 @@ const initAudio = () => {
       };
     };
 
-    // Define game sounds
-    sounds.paddleHit = createSound(440, 'square', 0.1);      // A4, sharp hit
-    sounds.blockHit = createSound(220, 'sawtooth', 0.15);   // A3, duller hit
-    sounds.playerScore = createSound(659.25, 'triangle', 0.3); // E5, positive score
-    sounds.aiScore = createSound(164.81, 'sine', 0.4);      // E3, negative score
+    // Define game sounds (Refined for better feel)
+    sounds.paddleHit = createSound(880, 'sine', 0.08);        // A5, clean "ping"
+    sounds.blockHit = createSound(200, 'sawtooth', 0.15);     // G#2, deeper "thud"
+    sounds.playerScore = createSound(783.99, 'triangle', 0.3); // G5, positive score
+    sounds.aiScore = createSound(130.81, 'sawtooth', 0.4);    // C3, lower score tone
 
   } catch (e) {
     console.error("Web Audio API is not supported in this browser.", e);
@@ -69,37 +70,36 @@ const initAudio = () => {
 };
 
 
-const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncrease }) => {
+const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncrease, paddleWidth, paddleHeight, isPaused }) => {
   const gameCanvasRef = useRef<HTMLDivElement>(null);
   const pixiAppRef = useRef<Application | null>(null);
   
+  // Effect to control the ticker based on the isPaused prop from the parent
+  useEffect(() => {
+    if (pixiAppRef.current && pixiAppRef.current.ticker) {
+      if (isPaused) {
+        pixiAppRef.current.ticker.stop();
+      } else {
+        pixiAppRef.current.ticker.start();
+      }
+    }
+  }, [isPaused]);
+
   useEffect(() => {
     let isMounted = true;
     let gameActive = true;
-    let isPaused = false;
-    let pauseContainer: Container | null = null;
 
     // A unified cleanup function to be used in all scenarios.
     const cleanupPixiApp = (app: Application) => {
-        app.stage.destroy({
-            children: true,
-        });
+        // A single, comprehensive destroy call is the most robust way to prevent resource leaks.
+        // It ensures the canvas, stage children, and their associated textures are all removed.
+        // Fix: The `stageOptions` property for `app.destroy` is from older PixiJS versions. In modern PixiJS, options like `children`, `texture`, and `baseTexture` are top-level properties in the destroy options object.
         app.destroy({
             removeView: true,
+            children: true,
+            texture: true,
+            baseTexture: true,
         });
-    };
-    
-    const handleKeyDown = (event: KeyboardEvent) => {
-        if (!pixiAppRef.current || !pauseContainer) return;
-        if (event.key === 'Escape' || event.key.toLowerCase() === 'p') {
-            isPaused = !isPaused;
-            pauseContainer.visible = isPaused;
-            if (isPaused) {
-                pixiAppRef.current.ticker.stop();
-            } else {
-                pixiAppRef.current.ticker.start();
-            }
-        }
     };
 
     // PIXI.js v8 requires an async initialization.
@@ -138,27 +138,55 @@ const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncre
       const createPaddle = (y: number, color: number) => {
         const paddle = new Graphics()
           .fill(color)
-          .drawRoundedRect(0, 0, PADDLE_WIDTH, PADDLE_HEIGHT, 8);
-        paddle.x = (GAME_WIDTH - PADDLE_WIDTH) / 2;
+          .drawRoundedRect(0, 0, paddleWidth, paddleHeight, 8);
+        paddle.x = (GAME_WIDTH - paddleWidth) / 2;
         paddle.y = y;
         app.stage.addChild(paddle);
         return paddle;
       };
       
-      const playerPaddle = createPaddle(GAME_HEIGHT - PADDLE_HEIGHT - PADDLE_Y_OFFSET, 0xFF007F); // Pink
-      const aiPaddle = createPaddle(PADDLE_Y_OFFSET, 0x00FFFF); // Cyan
+      const playerPaddle = createPaddle(GAME_HEIGHT - paddleHeight - PADDLE_Y_OFFSET, 0xFF007F); // Pink
+      
+      // --- AI Paddle with Glow Effect ---
+      const aiPaddleContainer = new Container();
+      aiPaddleContainer.x = (GAME_WIDTH - paddleWidth) / 2;
+      aiPaddleContainer.y = PADDLE_Y_OFFSET;
+
+      const aiPaddleGlow = new Graphics()
+          .fill({ color: 0x00FFFF, alpha: 0.3 })
+          .drawRoundedRect(-2, -2, paddleWidth + 4, paddleHeight + 4, 10); // Subtle glow
+
+      const aiPaddleGraphic = new Graphics()
+          .fill(0x00FFFF)
+          .drawRoundedRect(0, 0, paddleWidth, paddleHeight, 8);
+
+      aiPaddleContainer.addChild(aiPaddleGlow, aiPaddleGraphic);
+      app.stage.addChild(aiPaddleContainer);
+      const aiPaddle = aiPaddleContainer; // The container is now the main AI paddle object
 
       const ball = new Graphics()
         .fill(0xFFFFFF) // White
         .circle(0, 0, BALL_RADIUS);
       app.stage.addChild(ball);
 
-      const blocks: Graphics[] = [];
+      // --- Breakable Blocks Setup ---
+      const BLOCK_MAX_HEALTH = 3;
+      type Block = Graphics & { health: number };
+      const allBlocks: Block[] = [];
+
       const blockPositions = [
           {x: GAME_WIDTH / 4 - BLOCK_WIDTH / 2, y: GAME_HEIGHT / 2 - BLOCK_HEIGHT * 1.5},
           {x: GAME_WIDTH * 3/4 - BLOCK_WIDTH / 2, y: GAME_HEIGHT / 2 - BLOCK_HEIGHT * 1.5},
           {x: GAME_WIDTH / 2 - BLOCK_WIDTH / 2, y: GAME_HEIGHT / 2 + BLOCK_HEIGHT * 0.5},
       ];
+
+      const resetBlocks = () => {
+        allBlocks.forEach(block => {
+          block.health = BLOCK_MAX_HEALTH;
+          block.alpha = 1.0;
+          block.visible = true;
+        });
+      };
 
       blockPositions.forEach(pos => {
           const block = new Graphics()
@@ -166,8 +194,9 @@ const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncre
             .drawRoundedRect(0, 0, BLOCK_WIDTH, BLOCK_HEIGHT, 5);
           block.x = pos.x;
           block.y = pos.y;
+          (block as Block).health = BLOCK_MAX_HEALTH;
           app.stage.addChild(block);
-          blocks.push(block);
+          allBlocks.push(block as Block);
       });
 
       // --- Center Line ---
@@ -177,43 +206,12 @@ const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncre
       }
       app.stage.addChild(centerLine);
 
-      // --- Pause UI ---
-      pauseContainer = new Container();
-      pauseContainer.visible = false;
-      app.stage.addChild(pauseContainer);
-
-      const pauseOverlay = new Graphics()
-        .fill({ color: 0x000000, alpha: 0.6 })
-        .rect(0, 0, GAME_WIDTH, GAME_HEIGHT);
-      pauseContainer.addChild(pauseOverlay);
-
-      const pauseText = new Text({
-        text: 'PAUSED',
-        style: {
-            fontFamily: 'sans-serif',
-            fontSize: 72,
-            fontWeight: 'bold',
-            fill: 0x00FFFF, // Cyan
-            align: 'center',
-            stroke: { color: 0xFFFFFF, width: 2 },
-            dropShadow: {
-                color: '#00FFFF',
-                blur: 15,
-                alpha: 0.7,
-                distance: 0,
-            },
-        },
-      });
-      pauseText.anchor.set(0.5);
-      pauseText.x = GAME_WIDTH / 2;
-      pauseText.y = GAME_HEIGHT / 2;
-      pauseContainer.addChild(pauseText);
-
       // --- Game State ---
       let ballVelocity = { x: 0, y: 0 };
       let currentBallSpeed = initialBallSpeed;
 
       const resetBall = (direction: number) => {
+        resetBlocks(); // Reset blocks on score
         currentBallSpeed = initialBallSpeed;
         ball.x = GAME_WIDTH / 2;
         ball.y = GAME_HEIGHT / 2;
@@ -232,36 +230,93 @@ const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncre
       app.stage.on('pointermove', (event) => {
         let newX = event.global.x;
         // Clamp paddle position to stay within game bounds
-        const halfPaddleWidth = PADDLE_WIDTH / 2;
+        const halfPaddleWidth = paddleWidth / 2;
         if (newX < halfPaddleWidth) newX = halfPaddleWidth;
         if (newX > GAME_WIDTH - halfPaddleWidth) newX = GAME_WIDTH - halfPaddleWidth;
         playerPaddle.x = newX - halfPaddleWidth;
       });
       
       // --- Collision Detection ---
-      const checkCollision = (objA: Graphics, objB: Graphics) => {
+      const checkCollision = (objA: Graphics | Container, objB: Graphics | Container) => {
           const a = objA.getBounds();
           const b = objB.getBounds();
           return a.x + a.width > b.x && a.x < b.x + b.width && a.y + a.height > b.y && a.y < b.y + b.height;
       }
 
-      // --- Game Loop & Trail Effect Setup ---
+      // --- Game Loop & Particle Effects Setup ---
       const TRAIL_MAX_LIFE = 20;
       type TrailParticle = Graphics & { life: number };
       const trailParticles: TrailParticle[] = [];
+
+      const EXPLOSION_MAX_LIFE = 70; // Increased life for a bigger explosion
+      type ExplosionParticle = Graphics & { 
+        life: number; 
+        startLife: number; // For accurate fading and scaling
+        velocity: { x: number; y: number } 
+      };
+      const explosionParticles: ExplosionParticle[] = [];
+
+      let glowCounter = 0; // For AI paddle glow animation
+      const GRAVITY = 0.05; // A little gravity for explosion particles
+
+      // Enhanced explosion to be more visually impactful
+      const createExplosion = (x: number, y: number, color: number) => {
+        const particleCount = 40; // More particles for a bigger burst
+        const accentColor1 = 0x00FFFF; // Cyan
+        const accentColor2 = 0xFFFFFF; // White flash for a brighter pop
+
+        for (let i = 0; i < particleCount; i++) {
+            const particleSize = Math.random() * 6 + 2; // Slightly larger, more varied pieces
+            
+            // Color variation for a more dynamic explosion
+            const rand = Math.random();
+            const particleColor = rand < 0.7 ? color : (rand < 0.9 ? accentColor1 : accentColor2);
+            
+            // Use rectangles for a "shattered block" effect
+            const particle = new Graphics()
+                .fill(particleColor)
+                .rect(0, 0, particleSize, particleSize);
+            
+            particle.pivot.set(particleSize / 2, particleSize / 2); // Set pivot for rotation
+            particle.rotation = Math.random() * Math.PI * 2;
+            particle.x = x;
+            particle.y = y;
+            
+            const angle = Math.random() * Math.PI * 2;
+            const speed = Math.random() * 4 + 2; // More explosive speed
+            const life = Math.random() * EXPLOSION_MAX_LIFE + (EXPLOSION_MAX_LIFE * 0.5);
+
+            (particle as ExplosionParticle).velocity = { x: Math.cos(angle) * speed, y: Math.sin(angle) * speed };
+            (particle as ExplosionParticle).life = life;
+            (particle as ExplosionParticle).startLife = life; // Store initial life
+
+            app.stage.addChild(particle);
+            explosionParticles.push(particle as ExplosionParticle);
+        }
+      };
+
 
       app.ticker.add((ticker) => {
         if (!gameActive) return;
         
         const delta = ticker.deltaTime;
+        
+        // Animate AI Paddle Glow
+        glowCounter += 0.05 * delta;
+        const pulse = (Math.sin(glowCounter) + 1) / 2; // Oscillates between 0 and 1
+        aiPaddleGlow.alpha = 0.2 + pulse * 0.4; // Pulsates alpha between 0.2 and 0.6
 
         // Ball movement
         ball.x += ballVelocity.x * delta;
         ball.y += ballVelocity.y * delta;
 
+        // --- All Collision Logic ---
+        let shouldNormalize = false;
+
         // Wall collision
         if (ball.x - BALL_RADIUS < 0 || ball.x + BALL_RADIUS > GAME_WIDTH) {
           ballVelocity.x *= -1;
+          shouldNormalize = true; // Ensure consistent speed even after wall bounce
         }
 
         // Score
@@ -278,131 +333,171 @@ const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncre
         // Paddle collision
         const paddles = [playerPaddle, aiPaddle];
         paddles.forEach(paddle => {
-          if (checkCollision(ball, paddle)) {
+          if (checkCollision(ball, paddle as Graphics | Container)) {
               sounds.paddleHit?.();
               ballVelocity.y *= -1;
               // Prevent sticking by moving ball outside paddle
               if (paddle === playerPaddle) {
                 ball.y = paddle.y - BALL_RADIUS;
               } else {
-                ball.y = paddle.y + PADDLE_HEIGHT + BALL_RADIUS;
+                ball.y = paddle.y + paddleHeight + BALL_RADIUS;
               }
               
               // Influence x velocity based on where it hit the paddle
-              const hitPoint = ball.x - (paddle.x + PADDLE_WIDTH / 2);
-              ballVelocity.x += (hitPoint / (PADDLE_WIDTH / 2)) * 2;
+              const hitPoint = ball.x - (paddle.x + paddleWidth / 2);
+              ballVelocity.x += (hitPoint / (paddleWidth / 2)) * 2;
               
-              // Increase speed and apply it
+              // Increase speed
               currentBallSpeed = Math.min(currentBallSpeed + speedIncrease, MAX_BALL_SPEED);
-              const magnitude = Math.sqrt(ballVelocity.x**2 + ballVelocity.y**2);
-              if (magnitude > 0) {
-                  ballVelocity.x = (ballVelocity.x / magnitude) * currentBallSpeed;
-                  ballVelocity.y = (ballVelocity.y / magnitude) * currentBallSpeed;
-              }
+              shouldNormalize = true;
           }
         });
 
-        // Block collision
-        blocks.forEach(block => {
+        // Block collision with breakable logic
+        for (const block of allBlocks) {
+            if (!block.visible) continue;
+
             const ballCenterX = ball.x;
             const ballCenterY = ball.y;
             const blockCenterX = block.x + BLOCK_WIDTH / 2;
             const blockCenterY = block.y + BLOCK_HEIGHT / 2;
-
             const dx = ballCenterX - blockCenterX;
             const dy = ballCenterY - blockCenterY;
-
             const combinedHalfWidths = BALL_RADIUS + BLOCK_WIDTH / 2;
             const combinedHalfHeights = BALL_RADIUS + BLOCK_HEIGHT / 2;
 
             if (Math.abs(dx) < combinedHalfWidths && Math.abs(dy) < combinedHalfHeights) {
-                sounds.blockHit?.();
-                
                 const overlapX = combinedHalfWidths - Math.abs(dx);
                 const overlapY = combinedHalfHeights - Math.abs(dy);
+                
+                // Max bounce angle (e.g., 75 degrees)
+                const MAX_BOUNCE_ANGLE = (5 * Math.PI) / 12;
 
-                if (overlapX >= overlapY) {
-                    // Collision is vertical (top or bottom)
-                    ballVelocity.y *= -1;
-                    // Nudge ball out of block to prevent sticking
+                if (overlapY < overlapX) { // Vertical collision
+                    // Push ball out of block to prevent sticking
                     ball.y += dy > 0 ? overlapY : -overlapY;
-                } else {
-                    // Collision is horizontal (left or right)
-                    ballVelocity.x *= -1;
-                    // Nudge ball out of block
+                    
+                    const normalizedHitPointX = (ball.x - blockCenterX) / (BLOCK_WIDTH / 2);
+                    const bounceAngle = normalizedHitPointX * MAX_BOUNCE_ANGLE;
+                    
+                    // The direction of the bounce is determined by which side was hit
+                    const direction = Math.sign(dy);
+                    
+                    ballVelocity.x = currentBallSpeed * Math.sin(bounceAngle);
+                    ballVelocity.y = currentBallSpeed * Math.cos(bounceAngle) * direction;
+
+                } else { // Horizontal collision
+                    // Push ball out of block to prevent sticking
                     ball.x += dx > 0 ? overlapX : -overlapX;
+                    
+                    const normalizedHitPointY = (ball.y - blockCenterY) / (BLOCK_HEIGHT / 2);
+                    const bounceAngle = normalizedHitPointY * MAX_BOUNCE_ANGLE;
+                    
+                    // The direction of the bounce is determined by which side was hit
+                    const direction = Math.sign(dx);
+                    
+                    ballVelocity.y = currentBallSpeed * Math.sin(bounceAngle);
+                    ballVelocity.x = currentBallSpeed * Math.cos(bounceAngle) * direction;
                 }
+
+                sounds.blockHit?.();
+                // No need to set shouldNormalize, speed is preserved by the angle calculation.
+
+                // Handle breakable blocks
+                block.health -= 1;
+                if (block.health <= 0) {
+                    block.visible = false;
+                    createExplosion(blockCenterX, blockCenterY, 0x4A5568);
+                } else {
+                    block.alpha = 0.3 + (block.health / BLOCK_MAX_HEALTH) * 0.7;
+                }
+                
+                break; // Handle only one block collision per frame
             }
-        });
+        }
+
+        // Re-normalize the ball's speed after any collision to maintain consistency
+        if (shouldNormalize) {
+            const magnitude = Math.sqrt(ballVelocity.x**2 + ballVelocity.y**2);
+            if (magnitude > 0) {
+                ballVelocity.x = (ballVelocity.x / magnitude) * currentBallSpeed;
+                ballVelocity.y = (ballVelocity.y / magnitude) * currentBallSpeed;
+            }
+        }
 
         // --- Ball Trail Effect ---
-        // Create a new particle at the ball's position
         const trailParticle = new Graphics()
-            .fill(0x00FFFF) // A cyan glow
+            .fill(0x00FFFF)
             .circle(0, 0, BALL_RADIUS);
         trailParticle.x = ball.x;
         trailParticle.y = ball.y;
-        trailParticle.alpha = 0.5; // Start semi-transparent
+        trailParticle.alpha = 0.5;
         (trailParticle as TrailParticle).life = TRAIL_MAX_LIFE;
         app.stage.addChild(trailParticle);
         trailParticles.push(trailParticle as TrailParticle);
 
-        // Update and remove old particles. Iterate backwards for safe removal.
         for (let i = trailParticles.length - 1; i >= 0; i--) {
             const particle = trailParticles[i];
-            particle.life -= 1 * delta; // Frame-rate independent decay
+            particle.life -= 1 * delta;
 
             if (particle.life <= 0) {
                 app.stage.removeChild(particle);
-                particle.destroy(); // Free up WebGL resources
+                particle.destroy();
                 trailParticles.splice(i, 1);
             } else {
-                // Fade and shrink the particle over its lifetime
                 const lifeRatio = particle.life / TRAIL_MAX_LIFE;
                 particle.alpha = lifeRatio * 0.5;
                 particle.scale.set(lifeRatio);
             }
         }
+        
+        // --- Explosion particle update ---
+        for (let i = explosionParticles.length - 1; i >= 0; i--) {
+            const particle = explosionParticles[i];
+            particle.life -= 1 * delta;
+
+            if (particle.life <= 0) {
+                app.stage.removeChild(particle);
+                particle.destroy();
+                explosionParticles.splice(i, 1);
+            } else {
+                particle.velocity.y += GRAVITY * delta; // Apply gravity for a more realistic arc
+                particle.x += particle.velocity.x * delta;
+                particle.y += particle.velocity.y * delta;
+                const lifeRatio = particle.life / particle.startLife;
+                particle.alpha = lifeRatio;
+                particle.scale.set(lifeRatio);
+                particle.rotation += 0.05 * delta; // Add a slow spin
+            }
+        }
 
         // --- AI Movement (Refined) ---
-        let aiTargetX = aiPaddle.x + PADDLE_WIDTH / 2;
+        let aiTargetX = aiPaddle.x + paddleWidth / 2;
 
-        // Only predict and move if the ball is moving towards the AI.
         if (ballVelocity.y < 0) {
-            // Predict where the ball will be at the paddle's y-level
-            const timeToReachPaddle = (aiPaddle.y + PADDLE_HEIGHT - ball.y) / -ballVelocity.y;
+            const timeToReachPaddle = (aiPaddle.y + paddleHeight - ball.y) / -ballVelocity.y;
             let predictedX = ball.x + ballVelocity.x * timeToReachPaddle;
 
-            // Simple prediction of one wall bounce
             if (predictedX < BALL_RADIUS) {
                 predictedX = BALL_RADIUS + (BALL_RADIUS - predictedX);
             } else if (predictedX > GAME_WIDTH - BALL_RADIUS) {
                 predictedX = (GAME_WIDTH - BALL_RADIUS) - (predictedX - (GAME_WIDTH - BALL_RADIUS));
             }
             
-            // Add a slight "imperfection" to make it more human-like.
-            // Higher difficulty (higher speedIncrease) results in less error.
-            const maxError = PADDLE_WIDTH / 3 * (1 - speedIncrease);
+            const maxError = paddleWidth / 3 * (1 - speedIncrease);
             const error = (Math.random() - 0.5) * maxError;
             aiTargetX = predictedX + error;
         } else {
-            // If the ball is moving away, drift back to the center defensively.
             aiTargetX = GAME_WIDTH / 2;
         }
         
-        // The target for the paddle's top-left corner
-        const targetXForPaddle = aiTargetX - PADDLE_WIDTH / 2;
-
-        // Move paddle towards the calculated target position
+        const targetXForPaddle = aiTargetX - paddleWidth / 2;
         let newAiX = aiPaddle.x + (targetXForPaddle - aiPaddle.x) * aiReactionSpeed * delta;
         
-        // Clamp AI paddle position to stay within game bounds
         if (newAiX < 0) newAiX = 0;
-        if (newAiX > GAME_WIDTH - PADDLE_WIDTH) newAiX = GAME_WIDTH - PADDLE_WIDTH;
+        if (newAiX > GAME_WIDTH - paddleWidth) newAiX = GAME_WIDTH - paddleWidth;
         aiPaddle.x = newAiX;
       });
-
-      window.addEventListener('keydown', handleKeyDown);
     };
 
     initPixiApp();
@@ -410,11 +505,15 @@ const Game: React.FC<GameProps> = ({ onScoreUpdate, initialBallSpeed, speedIncre
     return () => {
       isMounted = false;
       gameActive = false;
-      window.removeEventListener('keydown', handleKeyDown);
       // Cleanup PIXI app
       if (pixiAppRef.current) {
         cleanupPixiApp(pixiAppRef.current);
         pixiAppRef.current = null;
+      }
+      // Cleanup Audio Context for robust resource management
+      if (audioContext) {
+        audioContext.close();
+        audioContext = null;
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

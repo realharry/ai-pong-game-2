@@ -1,7 +1,19 @@
 import React, { useState, useCallback, useEffect } from 'react';
 import { GameState, Score } from './types';
 import Game from './components/Game';
-import { WINNING_SCORE, GAME_WIDTH, GAME_HEIGHT, INITIAL_BALL_SPEED, DEFAULT_SPEED_INCREASE } from './constants';
+import { 
+  WINNING_SCORE, 
+  GAME_WIDTH, 
+  GAME_HEIGHT, 
+  INITIAL_BALL_SPEED, 
+  DEFAULT_SPEED_INCREASE, 
+  PADDLE_WIDTH, 
+  PADDLE_HEIGHT,
+  MIN_PADDLE_WIDTH,
+  MAX_PADDLE_WIDTH,
+  MIN_PADDLE_HEIGHT,
+  MAX_PADDLE_HEIGHT
+} from './constants';
 import { Card } from './components/ui/Card';
 import { Button } from './components/ui/Button';
 import { Slider } from './components/ui/Slider';
@@ -11,10 +23,13 @@ const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.Start);
   const [score, setScore] = useState<Score>({ player: 0, ai: 0 });
   const [winner, setWinner] = useState<string | null>(null);
+  const [isPaused, setIsPaused] = useState(false);
 
   // Gameplay settings
   const [initialBallSpeed, setInitialBallSpeed] = useState(INITIAL_BALL_SPEED);
   const [speedIncrease, setSpeedIncrease] = useState(DEFAULT_SPEED_INCREASE);
+  const [paddleWidth, setPaddleWidth] = useState(PADDLE_WIDTH);
+  const [paddleHeight, setPaddleHeight] = useState(PADDLE_HEIGHT);
 
   const handleScoreUpdate = useCallback((scorer: 'player' | 'ai') => {
     setScore(prevScore => ({
@@ -27,12 +42,27 @@ const App: React.FC = () => {
   useEffect(() => {
     if (score.player >= WINNING_SCORE) {
       setWinner('You');
+      setIsPaused(false);
       setGameState(GameState.GameOver);
     } else if (score.ai >= WINNING_SCORE) {
       setWinner('AI');
+      setIsPaused(false);
       setGameState(GameState.GameOver);
     }
   }, [score]);
+
+  // useEffect for handling pause keydown events
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+        if (gameState === GameState.Playing && (event.key === 'Escape' || event.key.toLowerCase() === 'p')) {
+            setIsPaused(prev => !prev);
+        }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+        window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [gameState]);
 
 
   const resetGame = () => {
@@ -42,16 +72,19 @@ const App: React.FC = () => {
   
   const handleStartGame = () => {
     resetGame();
+    setIsPaused(false);
     setGameState(GameState.Playing);
   };
 
   const handlePlayAgain = () => {
     resetGame();
+    setIsPaused(false);
     setGameState(GameState.Playing);
   };
   
   const handleGoToMenu = () => {
     resetGame();
+    setIsPaused(false);
     setGameState(GameState.Start);
   };
 
@@ -90,6 +123,32 @@ const App: React.FC = () => {
                   onValueChange={(value) => setSpeedIncrease(value[0])}
                 />
               </div>
+              <div className="space-y-2 text-left">
+                <Label htmlFor="paddle-width">
+                  Paddle Width: <span className="font-bold text-cyan-400">{paddleWidth}px</span>
+                </Label>
+                <Slider
+                  id="paddle-width"
+                  min={MIN_PADDLE_WIDTH}
+                  max={MAX_PADDLE_WIDTH}
+                  step={10}
+                  value={paddleWidth}
+                  onValueChange={(value) => setPaddleWidth(value[0])}
+                />
+              </div>
+              <div className="space-y-2 text-left">
+                <Label htmlFor="paddle-height">
+                  Paddle Height: <span className="font-bold text-cyan-400">{paddleHeight}px</span>
+                </Label>
+                <Slider
+                  id="paddle-height"
+                  min={MIN_PADDLE_HEIGHT}
+                  max={MAX_PADDLE_HEIGHT}
+                  step={2}
+                  value={paddleHeight}
+                  onValueChange={(value) => setPaddleHeight(value[0])}
+                />
+              </div>
             </div>
 
             <Button onClick={handleStartGame} className="mt-8">
@@ -109,11 +168,31 @@ const App: React.FC = () => {
           </Card>
         );
       case GameState.Playing:
-        return <Game 
-                 onScoreUpdate={handleScoreUpdate} 
-                 initialBallSpeed={initialBallSpeed}
-                 speedIncrease={speedIncrease}
-               />;
+        return (
+          <>
+            <Game 
+              onScoreUpdate={handleScoreUpdate} 
+              initialBallSpeed={initialBallSpeed}
+              speedIncrease={speedIncrease}
+              paddleWidth={paddleWidth}
+              paddleHeight={paddleHeight}
+              isPaused={isPaused}
+            />
+            {isPaused && (
+              <div className="absolute inset-0 bg-slate-900/80 backdrop-blur-sm flex flex-col items-center justify-center text-center">
+                <h2 
+                  className="text-7xl font-bold text-cyan-400 tracking-widest"
+                  style={{ textShadow: '0 0 20px rgba(0, 255, 255, 0.7)' }}
+                >
+                  PAUSED
+                </h2>
+                <p className="text-slate-400 mt-4 text-lg animate-pulse">
+                  Press 'P' or ESC to Resume
+                </p>
+              </div>
+            )}
+          </>
+        );
       default:
         return null;
     }
